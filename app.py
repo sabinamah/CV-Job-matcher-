@@ -163,6 +163,40 @@ Your cover letters:
 - Feel warm, genuine, and memorable"""
 
 
+def analyze_ats(api_key: str, cv_text: str, job_text: str) -> dict:
+    prompt = f"""You are an ATS (Applicant Tracking System) expert. Analyze this CV for ATS compatibility against the job description.
+ATS systems scan CVs before any human sees them. Many CVs are rejected purely due to formatting or missing keywords.
+
+=== CV ===
+{cv_text[:4000]}
+
+=== JOB DESCRIPTION ===
+{job_text[:2000]}
+
+Return this exact JSON:
+{{
+  "ats_score": <integer 0-100 where 100 = perfectly ATS optimized>,
+  "ats_verdict": "<one of: ATS Friendly | Needs Improvement | ATS Killer>",
+  "keyword_match_rate": <integer 0-100 percentage of job keywords found in CV>,
+  "matched_keywords": ["<keyword from JD found in CV>"],
+  "missing_keywords": ["<important keyword from JD missing from CV>"],
+  "formatting_issues": ["<ATS-breaking formatting problem e.g. 'Tables detected', 'Two-column layout', 'Headers/footers', 'Images or graphics', 'Special characters', 'Fancy fonts'>"],
+  "ats_friendly_elements": ["<thing the CV does right for ATS>"],
+  "critical_fixes": [
+    {{"fix": "<specific change to make>", "why": "<why ATS systems reject this — 1 sentence>", "priority": "<High | Medium | Low>"}}
+  ],
+  "section_headers_check": {{
+    "found": ["<standard section headers found e.g. 'Work Experience', 'Education'>"],
+    "missing": ["<standard section headers missing that ATS expects>"],
+    "non_standard": ["<creative headers ATS might not recognize e.g. 'My Journey' instead of 'Work Experience'>"]
+  }},
+  "keyword_density_tip": "<advice on keyword placement and density — 1-2 sentences>",
+  "ats_systems_likely_used": ["<ATS system commonly used for this type of role e.g. Workday, Greenhouse, Lever, Taleo>"],
+  "pass_prediction": "<one of: Likely to Pass | 50/50 | Likely to Fail> ATS screening"
+}}"""
+    return call_gemini_json(api_key, ANALYSIS_SYSTEM, prompt)
+
+
 def generate_cv_improvements(api_key: str, cv_text: str, job_text: str, match_data: dict) -> dict:
     skill_gaps = match_data.get("skill_gaps", [])
     concerns   = match_data.get("concerns", [])
@@ -450,7 +484,7 @@ if go:
                 "extra_notes":    extra_notes,
             }
             # Clear previous lazy-loaded data
-            for k in ["questions", "projects", "cover_letter"]:
+            for k in ["questions", "projects", "cover_letter", "ats", "cv_improvements"]:
                 st.session_state.pop(k, None)
         except Exception as e:
             st.error(f"Analysis failed: {e}")
@@ -541,8 +575,9 @@ if "match" in st.session_state:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs ───────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Full Analysis",
+        "🤖 ATS Filter",
         "❓ Interview Questions",
         "🚀 Skill-Up Projects",
         "📝 Improve Your CV",
@@ -604,8 +639,114 @@ if "match" in st.session_state:
             st.markdown(f'<p style="font-size:0.9rem;color:#374151;line-height:1.7;margin:0">{r.get("summary_for_hiring_manager","")}</p>', unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Tab 2: Interview Questions ─────────────────────────────────────────────
+    # ── Tab 2: ATS Filter ─────────────────────────────────────────────────────
     with tab2:
+        st.markdown('<p style="color:#6b7280;font-size:0.88rem">Most companies use ATS software to filter CVs before a human sees them. Check if your CV will pass.</p>', unsafe_allow_html=True)
+        if "ats" not in st.session_state:
+            if st.button("🤖 Run ATS Analysis", key="gen_ats"):
+                with st.spinner("Scanning your CV through ATS filters..."):
+                    try:
+                        ats = analyze_ats(api_key, cv, jd)
+                        st.session_state["ats"] = ats
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+        else:
+            ats = st.session_state["ats"]
+            ats_score = ats.get("ats_score", 0)
+            ats_verdict = ats.get("ats_verdict", "")
+            pass_pred = ats.get("pass_prediction", "")
+
+            ats_score_color = "#16a34a" if ats_score >= 70 else "#d97706" if ats_score >= 50 else "#dc2626"
+            verdict_styles = {
+                "ATS Friendly":      ("#d1fae5", "#065f46", "✅"),
+                "Needs Improvement": ("#fef3c7", "#92400e", "⚠️"),
+                "ATS Killer":        ("#fee2e2", "#991b1b", "❌"),
+            }
+            vs = verdict_styles.get(ats_verdict, ("#f3f4f6", "#374151", "❓"))
+            pass_colors = {
+                "Likely to Pass": "#16a34a",
+                "50/50":          "#d97706",
+                "Likely to Fail": "#dc2626",
+            }
+            pc = pass_colors.get(pass_pred, "#6b7280")
+
+            # Top row
+            a1, a2, a3 = st.columns(3)
+            with a1:
+                st.markdown(f'<div class="panel score-ring-wrap"><div class="score-number" style="color:{ats_score_color}">{ats_score}</div><div class="score-label">ATS Score / 100</div><div style="margin-top:10px"><div style="background:#e5e7eb;border-radius:999px;height:8px"><div style="background:{ats_score_color};width:{ats_score}%;height:8px;border-radius:999px"></div></div></div></div>', unsafe_allow_html=True)
+            with a2:
+                st.markdown(f'<div class="panel" style="text-align:center;padding:24px"><div style="font-size:0.7rem;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px">ATS Verdict</div><span style="background:{vs[0]};color:{vs[1]};padding:8px 18px;border-radius:999px;font-weight:800;font-size:1rem">{vs[2]} {ats_verdict}</span></div>', unsafe_allow_html=True)
+            with a3:
+                st.markdown(f'<div class="panel" style="text-align:center;padding:24px"><div style="font-size:0.7rem;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px">Pass Prediction</div><div style="font-size:1rem;font-weight:800;color:{pc}">{pass_pred}</div><div style="font-size:0.75rem;color:#6b7280;margin-top:6px">Keyword match: {ats.get("keyword_match_rate",0)}%</div></div>', unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            atsl, atsr = st.columns(2, gap="large")
+
+            with l:
+                # Critical fixes
+                if ats.get("critical_fixes"):
+                    st.markdown('<div class="panel"><div class="panel-title">🔧 Critical Fixes</div>', unsafe_allow_html=True)
+                    priority_colors = {"High": "#fee2e2", "Medium": "#fef3c7", "Low": "#f0f4ff"}
+                    priority_text   = {"High": "#991b1b", "Medium": "#92400e", "Low": "#3730a3"}
+                    for fix in ats["critical_fixes"]:
+                        p = fix.get("priority", "Medium")
+                        st.markdown(f'<div style="background:{priority_colors.get(p,"#f3f4f6")};border-radius:10px;padding:12px 14px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-size:0.88rem;font-weight:700;color:#1e1b4b">{fix.get("fix","")}</span><span style="font-size:0.7rem;font-weight:700;color:{priority_text.get(p,"#374151")};background:white;padding:2px 8px;border-radius:999px">{p}</span></div><div style="font-size:0.78rem;color:#6b7280;margin-top:4px">{fix.get("why","")}</div></div>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # Formatting issues
+                if ats.get("formatting_issues"):
+                    st.markdown('<div class="panel"><div class="panel-title">⚠️ Formatting Issues ATS Can\'t Read</div>', unsafe_allow_html=True)
+                    for fi in ats["formatting_issues"]:
+                        st.markdown(f'<div style="background:#fef2f2;border-left:3px solid #dc2626;border-radius:0 10px 10px 0;padding:10px 14px;margin-bottom:8px;font-size:0.85rem;color:#991b1b">✗ {fi}</div>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # ATS systems
+                if ats.get("ats_systems_likely_used"):
+                    st.markdown('<div class="panel"><div class="panel-title">🖥️ Likely ATS Systems for This Role</div>', unsafe_allow_html=True)
+                    for sys in ats["ats_systems_likely_used"]:
+                        st.markdown(f'<span class="tag tag-gray">{sys}</span>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+            with r:
+                # Missing keywords
+                if ats.get("missing_keywords"):
+                    st.markdown('<div class="panel"><div class="panel-title">🔑 Missing Keywords</div><p style="font-size:0.78rem;color:#6b7280;margin-bottom:10px">These keywords from the job description are absent from your CV — ATS will penalize you for each one.</p>', unsafe_allow_html=True)
+                    for kw in ats["missing_keywords"]:
+                        st.markdown(f'<span class="tag tag-red">✗ {kw}</span>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # Matched keywords
+                if ats.get("matched_keywords"):
+                    st.markdown('<div class="panel"><div class="panel-title">✅ Keywords Found</div>', unsafe_allow_html=True)
+                    for kw in ats["matched_keywords"]:
+                        st.markdown(f'<span class="tag tag-green">✓ {kw}</span>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # Section headers
+                sec = ats.get("section_headers_check", {})
+                if sec.get("non_standard") or sec.get("missing"):
+                    st.markdown('<div class="panel"><div class="panel-title">📋 Section Headers</div>', unsafe_allow_html=True)
+                    if sec.get("non_standard"):
+                        st.markdown('<div style="font-size:0.78rem;font-weight:700;color:#92400e;margin-bottom:6px">Non-standard (ATS may not recognize):</div>', unsafe_allow_html=True)
+                        for h in sec["non_standard"]:
+                            st.markdown(f'<span class="tag tag-yellow">⚠ {h}</span>', unsafe_allow_html=True)
+                    if sec.get("missing"):
+                        st.markdown('<div style="font-size:0.78rem;font-weight:700;color:#991b1b;margin-top:8px;margin-bottom:6px">Missing standard sections:</div>', unsafe_allow_html=True)
+                        for h in sec["missing"]:
+                            st.markdown(f'<span class="tag tag-red">+ {h}</span>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                # Keyword density tip
+                if ats.get("keyword_density_tip"):
+                    st.markdown(f'<div class="panel"><div class="panel-title">💡 Keyword Strategy</div><p style="font-size:0.88rem;color:#374151;margin:0">{ats["keyword_density_tip"]}</p></div>', unsafe_allow_html=True)
+
+            if st.button("↻ Re-run ATS Check", key="regen_ats"):
+                st.session_state.pop("ats", None)
+                st.rerun()
+
+    # ── Tab 3: Interview Questions ─────────────────────────────────────────────
+    with tab3:
         if "questions" not in st.session_state:
             if st.button("Generate Interview Questions", key="gen_q"):
                 with st.spinner("Generating targeted interview questions..."):
@@ -644,8 +785,8 @@ if "match" in st.session_state:
                 st.session_state.pop("questions", None)
                 st.rerun()
 
-    # ── Tab 3: Skill-Up Projects ───────────────────────────────────────────────
-    with tab3:
+    # ── Tab 4: Skill-Up Projects ───────────────────────────────────────────────
+    with tab4:
         gaps = r.get("skill_gaps", [])
         if gaps:
             st.markdown(f'<p style="color:#6b7280;font-size:0.88rem">Based on your skill gaps: {", ".join(f"<strong>{g}</strong>" for g in gaps)} — here are concrete projects to close them.</p>', unsafe_allow_html=True)
@@ -690,8 +831,8 @@ if "match" in st.session_state:
                 st.session_state.pop("projects", None)
                 st.rerun()
 
-    # ── Tab 4: Improve Your CV ────────────────────────────────────────────────
-    with tab4:
+    # ── Tab 5: Improve Your CV ────────────────────────────────────────────────
+    with tab5:
         st.markdown('<p style="color:#6b7280;font-size:0.88rem">Get specific advice to improve your CV for this role — wording, structure, keywords, and company-specific tailoring.</p>', unsafe_allow_html=True)
         if "cv_improvements" not in st.session_state:
             if st.button("📝 Analyze & Improve My CV", key="gen_imp"):
@@ -724,9 +865,9 @@ if "match" in st.session_state:
                 if imp.get("quick_wins"):
                     st.markdown('<div class="panel"><div class="panel-title">⚡ Quick Wins</div>', unsafe_allow_html=True)
                     for qw in imp["quick_wins"]:
-
                         example_html = f'<div style="font-size:0.78rem;color:#6b7280;margin-top:6px;font-style:italic">e.g. {qw["example"]}</div>' if qw.get("example") else ""
-                        st.markdown(f'...{example_html}...', unsafe_allow_html=True)
+                        st.markdown(f'<div style="background:#f0fdf4;border-left:3px solid #16a34a;border-radius:0 10px 10px 0;padding:12px 14px;margin-bottom:10px"><div style="font-size:0.88rem;font-weight:700;color:#065f46">{qw.get("action","")}</div><div style="font-size:0.8rem;color:#374151;margin-top:4px">{qw.get("why","")}</div>{example_html}</div>', unsafe_allow_html=True)
+                    st.markdown("</div>", unsafe_allow_html=True)
 
                 # Company-specific tips
                 if imp.get("company_specific_tips"):
@@ -772,8 +913,8 @@ if "match" in st.session_state:
                 st.session_state.pop("cv_improvements", None)
                 st.rerun()
 
-    # ── Tab 5: Cover Letter ────────────────────────────────────────────────────
-    with tab5:
+    # ── Tab 6: Cover Letter ────────────────────────────────────────────────────
+    with tab6:
         st.markdown('<p style="color:#6b7280;font-size:0.88rem">Generate a humanized, non-robotic cover letter tailored to this exact job.</p>', unsafe_allow_html=True)
 
         # Allow updating options inline
